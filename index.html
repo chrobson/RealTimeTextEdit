@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Real-Time Collaborative Text Editor</title>
+    <style>
+        body { font-family: Arial, sans-serif; }
+        #editor { width: 80%; height: 400px; margin: 20px auto; display: block; }
+    </style>
+</head>
+<body>
+<h1>Real-Time Collaborative Text Editor</h1>
+<textarea id="editor"></textarea>
+
+<script>
+    let clientId = 'client_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    console.log('Client ID:', clientId);
+
+    let editor = document.getElementById('editor');
+    let ws;
+    let isLocalChange = false;
+
+    fetch('/text')
+        .then(response => response.text())
+        .then(data => {
+            isLocalChange = true;
+            editor.value = data;
+            editor.setAttribute('data-prev-value', data);
+            isLocalChange = false;
+
+            initializeWebSocket();
+        })
+        .catch(error => {
+            console.error('Error fetching initial text:', error);
+        });
+
+    function initializeWebSocket() {
+        ws = new WebSocket('ws://localhost:8080/ws');
+
+        ws.onopen = function() {
+            console.log('WebSocket connection opened');
+        };
+
+        ws.onerror = function(error) {
+            console.error('WebSocket error:', error);
+        };
+
+        ws.onclose = function(event) {
+            console.log('WebSocket connection closed:', event);
+        };
+
+        ws.onmessage = function(event) {
+            console.log('Received message:', event.data);
+            let edit = JSON.parse(event.data);
+            console.log('Received edit:', edit);
+            console.log('edit.clientId:', edit.clientId, 'clientId:', clientId);
+
+            if (edit.clientId === clientId) {
+                console.log('Skipping edit from self');
+                return;
+            }
+            applyEdit(edit);
+        };
+    }
+
+    function applyEdit(edit) {
+        console.log('Applying edit:', edit);
+        isLocalChange = true;
+        let currentText = editor.value;
+        console.log('Current text before edit:', currentText);
+        switch (edit.type) {
+            case 'insert':
+                editor.value = currentText.slice(0, edit.position) + edit.text + currentText.slice(edit.position);
+                break;
+            case 'delete':
+                editor.value = currentText.slice(0, edit.position) + currentText.slice(edit.position + edit.length);
+                break;
+        }
+        console.log('Updated text after edit:', editor.value);
+        editor.setAttribute('data-prev-value', editor.value);
+        isLocalChange = false;
+    }
+
+    editor.addEventListener('input', function(event) {
+        if (isLocalChange) {
+            console.log('Input event skipped due to local change');
+            return;
+        }
+
+        console.log('Input event triggered by user');
+
+        let previousValue = editor.getAttribute('data-prev-value') || '';
+        let newValue = editor.value;
+
+        let edits = diffTexts(previousValue, newValue);
+
+        if (edits) {
+            if (!Array.isArray(edits)) {
+                edits = [edits];
+            }
+
+            edits.forEach(edit => {
+                edit.clientId = clientId;
+                fetch('/edit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(edit)
+                });
+            });
+        }
+
+        editor.setAttribute('data-prev-value', newValue);
+    });
+
+    function diffTexts(oldText, newText) {
+        let start = 0;
+        while (start < oldText.length && start < newText.length && oldText[start] === newText[start]) {
+            start++;
+        }
+
+        let endOld = oldText.length - 1;
+        let endNew = newText.length - 1;
+        while (endOld >= start && endNew >= start && oldText[endOld] === newText[endNew]) {
+            endOld--;
+            endNew--;
+        }
+
+        if (start > endOld && start > endNew) {
+            return null;
+        }
+
+        if (endOld < start) {
+            return {
+                position: start,
+                text: newText.slice(start, endNew + 1),
+                type: 'insert'
+            };
+        } else if (endNew < start) {
+            return {
+                position: start,
+                length: endOld - start + 1,
+                type: 'delete'
+            };
+        } else {
+            return [
+                {
+                    position: start,
+                    length: endOld - start + 1,
+                    type: 'delete'
+                },
+                {
+                    position: start,
+                    text: newText.slice(start, endNew + 1),
+                    type: 'insert'
+                }
+            ];
+        }
+    }
+</script>
+</body>
+</html>
